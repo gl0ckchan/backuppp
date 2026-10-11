@@ -4,7 +4,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include "thread_pool.h"
+
 #include <xxhash.h>
+
+#define NUMBER_OF_THREADS 6
 
 namespace fs = std::filesystem;
 
@@ -51,68 +55,20 @@ int main(int argc, char *argv[]) {
 		hashes_in.close();
 	}
 
-	std::ofstream hashes_out(hashes_path, std::ios::app);
-	if (!hashes_out) {
-		std::cerr << "Cannot open hashes.txt for writing\n";
+	thread_pool pool;
+	if (!init_thread_pool(pool, NUMBER_OF_THREADS, src_dir, dst_dir, hashes_map)) {
+		std::cerr << "failed to init thread pool\n";
 
-	    return 69;
-	}
+		return 69;
+	};
 
-	size_t count = 0;
 	for (const fs::directory_entry &dir_entry : fs::recursive_directory_iterator(src_dir)) {
-		const fs::path &path = dir_entry.path();
-		
-		fs::path relative = fs::relative(path, src_dir);
-        fs::path target   = dst_dir / relative;
-
-		if (dir_entry.is_directory()) { 
-			fs::create_directory(target);
-			continue;
-		}
-
-		if (!dir_entry.is_regular_file() || path.filename() == "hashes.txt") continue;
-
-		const std::string hash 	   = hash_file(path.string());
-		const std::string old_hash = hashes_map[path.string()];
-
-		if (old_hash != hash) {
-			std::cout << "changed file: " <<  path << "\n";
-
-			fs::create_directories(target.parent_path()); 
-            fs::copy_file(path, target, fs::copy_options::overwrite_existing);
-            hashes_out << path.string() << ':' << hash << '\n';
-
-            count++;
-    	} 
+		thread_pool_add_task(pool, dir_entry);
 	}
 
-	std::cout << "copied files: " << count << std::endl;
+	destroy_thread_pool(pool);
 
-	hashes_out.close();
+	std::cout << "copied files: " << pool.count << std::endl;
 
 	return 0;
 }
-
-std::string hash_file(const std::string& file_path) {
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file) throw std::runtime_error("Cannot open file: " + file_path);
-
-    XXH3_state_t* state = XXH3_createState();
-    XXH3_64bits_reset(state);
-
-    // Крупный буфер + чтение через readsome / rdbuf
-    constexpr size_t BUF = 1 << 20; // 1 MiB
-    std::vector<char> buffer(BUF);
-
-    while (file) {
-        file.read(buffer.data(), BUF);
-        std::streamsize got = file.gcount();
-        if (got > 0) XXH3_64bits_update(state, buffer.data(), got);
-    }
-
-    uint64_t h = XXH3_64bits_digest(state);
-    XXH3_freeState(state);
-
-    return std::to_string(h);
-}
-
