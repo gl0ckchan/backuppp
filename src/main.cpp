@@ -1,11 +1,14 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
+#include <vector>
+
+#include <xxhash.h>
 
 namespace fs = std::filesystem;
 
-uint64_t hash_file(const std::string& filePath);
-std::string find_hash(const std::string& filename, const fs::path& wanted_path);
+std::string hash_file(const std::string& file_path); 
 
 int main(int argc, char *argv[]) {
 	if (argc < 3) {
@@ -19,7 +22,41 @@ int main(int argc, char *argv[]) {
     fs::create_directory(dst_dir);
 
 	std::string hashes_path = src_dir.string() + "/hashes.txt";
-	std::ofstream hashes(hashes_path, std::ios::app); 
+
+	if (!fs::exists(hashes_path)) {
+		std::ofstream create_file(hashes_path);
+	    create_file.close();
+	}
+
+	std::unordered_map<std::string, std::string> hashes_map;
+
+	// загрузка хэшей в мапу
+	{
+	    std::ifstream hashes_in(hashes_path);
+		if (!hashes_in) {
+			std::cerr << "Cannot open hashes.txt for reading\n";
+
+		    return 69;
+		}
+
+		std::string line;
+
+		while (std::getline(hashes_in, line)) {
+			const size_t pos = line.find(":");
+			if (pos == std::string::npos) continue;
+
+			hashes_map[line.substr(0, pos)] = line.substr(pos + 1);
+		}
+
+		hashes_in.close();
+	}
+
+	std::ofstream hashes_out(hashes_path, std::ios::app);
+	if (!hashes_out) {
+		std::cerr << "Cannot open hashes.txt for writing\n";
+
+	    return 69;
+	}
 
 	size_t count = 0;
 	for (const fs::directory_entry &dir_entry : fs::recursive_directory_iterator(src_dir)) {
@@ -35,15 +72,15 @@ int main(int argc, char *argv[]) {
 
 		if (!dir_entry.is_regular_file() || path.filename() == "hashes.txt") continue;
 
-		const std::string hash 	   = std::to_string(hash_file(path.string()));
-		const std::string old_hash = find_hash(hashes_path, path);
+		const std::string hash 	   = hash_file(path.string());
+		const std::string old_hash = hashes_map[path.string()];
 
 		if (old_hash != hash) {
 			std::cout << "changed file: " <<  path << "\n";
 
 			fs::create_directories(target.parent_path()); 
             fs::copy_file(path, target, fs::copy_options::overwrite_existing);
-            hashes << path.string() << '\t' << hash << '\n';
+            hashes_out << path.string() << ':' << hash << '\n';
 
             count++;
     	} 
@@ -51,49 +88,31 @@ int main(int argc, char *argv[]) {
 
 	std::cout << "copied files: " << count << std::endl;
 
-	hashes.close();
+	hashes_out.close();
 
 	return 0;
 }
 
-uint64_t hash_file(const std::string& file_path) {
+std::string hash_file(const std::string& file_path) {
     std::ifstream file(file_path, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Cannot open file: " + file_path);
+    if (!file) throw std::runtime_error("Cannot open file: " + file_path);
+
+    XXH3_state_t* state = XXH3_createState();
+    XXH3_64bits_reset(state);
+
+    // Крупный буфер + чтение через readsome / rdbuf
+    constexpr size_t BUF = 1 << 20; // 1 MiB
+    std::vector<char> buffer(BUF);
+
+    while (file) {
+        file.read(buffer.data(), BUF);
+        std::streamsize got = file.gcount();
+        if (got > 0) XXH3_64bits_update(state, buffer.data(), got);
     }
 
-    uint64_t hash = 14695981039346656037ULL; 
-    const uint64_t prime = 1099511628211ULL;  
+    uint64_t h = XXH3_64bits_digest(state);
+    XXH3_freeState(state);
 
-    char buffer[8192];
-    while (file.read(buffer, sizeof(buffer))) {
-        for (std::streamsize i = 0; i < file.gcount(); ++i) {
-            hash ^= (unsigned char)(buffer[i]);
-            hash *= prime;
-        }
-    }
-
-    for (std::streamsize i = 0; i < file.gcount(); ++i) {
-        hash ^= (unsigned char)(buffer[i]);
-        hash *= prime;
-    }
-
-    return hash;
-}
-
-std::string find_hash(const std::string& filename, const fs::path& wanted_path) {
-    std::ifstream input(filename);
-
-    const std::string wanted = wanted_path.string();
-    std::string line;
-
-    while (std::getline(input, line)) {
-        const auto tab = line.find('\t');
-        if (tab != std::string::npos && line.substr(0, tab) == wanted) {
-            return line.substr(tab + 1);
-        }
-    }
-
-    return "";
+    return std::to_string(h);
 }
 
