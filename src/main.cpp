@@ -8,11 +8,9 @@
 
 #include <xxhash.h>
 
-#define NUMBER_OF_THREADS 6
+#define NUMBER_OF_THREADS 12
 
 namespace fs = std::filesystem;
-
-std::string hash_file(const std::string& file_path); 
 
 int main(int argc, char *argv[]) {
 	if (argc < 3) {
